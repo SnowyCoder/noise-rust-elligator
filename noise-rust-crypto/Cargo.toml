@@ -10,15 +10,15 @@ description = "Wrappers of dalek and RustCrypto crates for noise-protocol"
 
 [features]
 default = ["use-x25519", "use-chacha20poly1305", "use-aes-256-gcm", "use-blake2", "use-sha2"]
-x25519 = ["x25519-dalek", "x25519-dalek/static_secrets", "x25519-dalek/getrandom"]
-use-x25519 = ["x25519", "x25519-dalek/default"]
+x25519 = ["curve25519-dalek", "curve25519-dalek/rand_core"]
+use-x25519 = ["x25519", "curve25519-dalek/default"]
 use-chacha20poly1305 = ["chacha20poly1305"]
 use-aes-256-gcm = ["aes-gcm"]
 use-blake2 = ["blake2"]
 use-sha2 = ["sha2"]
 
 [dependencies]
-x25519-dalek = { version = "2.0.0-rc.2", optional = true, default-features = false }
+curve25519-dalek = { git = "https://github.com/SnowyCoder/curve25519-dalek", rev = "26c9c84", optional = true, default-features = false }
 aes-gcm = { version = "0.10.1", optional = true }
 chacha20poly1305 = { version = "0.10.1", optional = true }
 blake2 = { version = "0.10.6", optional = true }

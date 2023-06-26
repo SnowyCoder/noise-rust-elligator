@@ -181,11 +181,13 @@ fn get_pattern_by_name(name: &str) -> Option<HandshakePattern> {
     PATTERNS.get(name).cloned()
 }
 
-fn to_dh<D>(k: &HexString) -> D::Key
+fn to_dh<D>(k: &HexString) -> DhKeyPair<D::Key, D::Pubkey>
 where
     D: DH,
 {
-    D::Key::from_slice(k.as_ref())
+    let private = D::Key::from_slice(k.as_ref());
+    let public = D::pubkey(&private);
+    (private, public).into()
 }
 
 fn to_pubkey<D>(k: &HexString) -> D::Pubkey
@@ -216,6 +218,7 @@ where
     let mut h_i = HandshakeState::<D, C, H>::new(
         pattern.clone(),
         true,
+        false,
         v.init_prologue.as_ref(),
         v.init_static.as_ref().map(to_dh::<D>),
         Some(to_dh::<D>(&v.init_ephemeral)),
@@ -224,6 +227,7 @@ where
     );
     let mut h_r = HandshakeState::<D, C, H>::new(
         pattern.clone(),
+        false,
         false,
         v.resp_prologue.as_ref(),
         v.resp_static.as_ref().map(to_dh::<D>),

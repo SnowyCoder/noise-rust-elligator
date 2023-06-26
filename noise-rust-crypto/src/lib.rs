@@ -13,11 +13,13 @@
 
 pub mod sensitive;
 
+use aes_gcm::aead::{OsRng, rand_core::RngCore};
+#[cfg(feature = "x25519")]
+use curve25519_dalek::MontgomeryPoint;
 use sensitive::Sensitive;
 
 use noise_protocol::*;
-#[cfg(feature = "x25519")]
-use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroizing;
 
 #[cfg(feature = "x25519")]
 pub enum X25519 {}
@@ -32,19 +34,32 @@ impl DH for X25519 {
         "25519"
     }
 
-    fn genkey() -> Self::Key {
-        Self::Key::from_slice(StaticSecret::random().as_bytes())
+    fn genkey(elligator: bool) -> DhKeyPair<Self::Key, Self::Pubkey> {
+        if elligator {
+            let (priv_key, pub_key) = MontgomeryPoint::generate_ephemeral_elligator_random(&mut OsRng);
+            let priv_key =  Sensitive::from(Zeroizing::new(priv_key));
+            (priv_key, pub_key).into()
+        } else {
+            let mut priv_key = Self::Key::new();
+            OsRng.fill_bytes(priv_key.as_mut_slice());
+            let pub_key = MontgomeryPoint::mul_base_clamped(*priv_key);
+            (priv_key, *pub_key.as_bytes()).into()
+        }
     }
 
     fn pubkey(k: &Self::Key) -> Self::Pubkey {
-        let static_secret = StaticSecret::from(**k);
-        *PublicKey::from(&static_secret).as_bytes()
+        MontgomeryPoint::mul_base_clamped(**k).to_bytes()
     }
 
-    fn dh(k: &Self::Key, pk: &Self::Pubkey) -> Result<Self::Output, ()> {
-        let k = StaticSecret::from(**k);
-        let pk = PublicKey::from(*pk);
-        Ok(Self::Output::from_slice(k.diffie_hellman(&pk).as_bytes()))
+    fn dh(k: &Self::Key, pk: &Self::Pubkey, is_elligator_encoded: bool) -> Result<Self::Output, ()> {
+        let pk = if is_elligator_encoded {
+            MontgomeryPoint::from_elligator_representative(pk)
+        } else {
+            MontgomeryPoint(*pk)
+        };
+        let data = pk.mul_clamped(**k).to_bytes();
+        let data = Sensitive::from(Zeroizing::new(data));
+        Ok(data)
     }
 }
 

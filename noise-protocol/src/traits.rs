@@ -72,14 +72,46 @@ pub trait DH {
     fn name() -> &'static str;
 
     /// Randomly generate a new private key.
-    fn genkey() -> Self::Key;
+    fn genkey(elligator: bool) -> DhKeyPair<Self::Key, Self::Pubkey>;
 
     /// Calculate public key from a private key.
+    /// THIS DOES NOT ENCODE THE KEY AS AN ELLIGATOR KEY, PLEASE USE THE PUBLIC KEY PROVIDED AT CREATION
     fn pubkey(_: &Self::Key) -> Self::Pubkey;
 
     /// Perform DH key exchange.
-    fn dh(_: &Self::Key, _: &Self::Pubkey) -> Result<Self::Output, ()>;
+    fn dh(_: &Self::Key, _: &Self::Pubkey, is_elligator_encoded: bool) -> Result<Self::Output, ()>;
 }
+
+/// Union of a DiffieHellman private and public keys
+pub struct DhKeyPair<S, P> {
+    /// Private key
+    pub private: S,
+    /// Public key
+    pub public: P,
+}
+
+impl<S, P> DhKeyPair<S, P> {
+    /// Generates a keypair from a private key
+    /// Only to be used for static, non-elligator-encoded keys.
+    pub fn from_private<D: DH<Key = S, Pubkey = P>>(private: S) -> Self {
+        let public = D::pubkey(&private);
+        (private, public).into()
+    }
+}
+
+impl<S: U8Array, P: U8Array> Clone for DhKeyPair<S, P> {
+    fn clone(&self) -> Self {
+        Self { private: self.private.clone(), public: self.public.clone() }
+    }
+}
+
+impl<S, P> From<(S, P)> for DhKeyPair<S, P> {
+    fn from(value: (S, P)) -> Self {
+        let (private, public) = value;
+        DhKeyPair { private, public }
+    }
+}
+
 
 /// An AEAD.
 pub trait Cipher {

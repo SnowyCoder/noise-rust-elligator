@@ -1,7 +1,7 @@
 use crate::cipherstate::CipherState;
 use crate::handshakepattern::{HandshakePattern, Token};
 use crate::symmetricstate::SymmetricState;
-use crate::traits::{Cipher, Hash, U8Array, DH};
+use crate::traits::{Cipher, Hash, U8Array, DH, DhKeyPair};
 use arrayvec::{ArrayString, ArrayVec};
 use core::fmt::{Display, Error as FmtError, Formatter, Write};
 
@@ -11,11 +11,12 @@ use alloc::vec::Vec;
 /// Noise handshake state.
 pub struct HandshakeState<D: DH, C: Cipher, H: Hash> {
     symmetric: SymmetricState<C, H>,
-    s: Option<D::Key>,
-    e: Option<D::Key>,
+    s: Option<DhKeyPair<D::Key, D::Pubkey>>,
+    e: Option<DhKeyPair<D::Key, D::Pubkey>>,
     rs: Option<D::Pubkey>,
     re: Option<D::Pubkey>,
     is_initiator: bool,
+    is_elligator_encoded: bool,
     pattern: HandshakePattern,
     message_index: usize,
     pattern_has_psk: bool,
@@ -31,11 +32,12 @@ where
     fn clone(&self) -> Self {
         Self {
             symmetric: self.symmetric.clone(),
-            s: self.s.as_ref().map(U8Array::clone),
-            e: self.e.as_ref().map(U8Array::clone),
+            s: self.s.as_ref().map(Clone::clone),
+            e: self.e.as_ref().map(Clone::clone),
             rs: self.rs.as_ref().map(U8Array::clone),
             re: self.re.as_ref().map(U8Array::clone),
             is_initiator: self.is_initiator,
+            is_elligator_encoded: self.is_elligator_encoded,
             pattern: self.pattern.clone(),
             message_index: self.message_index,
             pattern_has_psk: self.pattern_has_psk,
@@ -79,9 +81,10 @@ where
     pub fn new<P>(
         pattern: HandshakePattern,
         is_initiator: bool,
+        is_elligator_encoded: bool,
         prologue: P,
-        s: Option<D::Key>,
-        e: Option<D::Key>,
+        s: Option<DhKeyPair<D::Key, D::Pubkey>>,
+        e: Option<DhKeyPair<D::Key, D::Pubkey>>,
         rs: Option<D::Pubkey>,
         re: Option<D::Pubkey>,
     ) -> Self
@@ -99,7 +102,7 @@ where
             match *t {
                 Token::S => {
                     if is_initiator {
-                        symmetric.mix_hash(D::pubkey(s.as_ref().unwrap()).as_slice());
+                        symmetric.mix_hash(s.as_ref().unwrap().public.as_slice());
                     } else {
                         symmetric.mix_hash(rs.as_ref().unwrap().as_slice());
                     }
@@ -113,7 +116,7 @@ where
                     if is_initiator {
                         symmetric.mix_hash(rs.as_ref().unwrap().as_slice());
                     } else {
-                        symmetric.mix_hash(D::pubkey(s.as_ref().unwrap()).as_slice());
+                        symmetric.mix_hash(s.as_ref().unwrap().public.as_slice());
                     }
                 }
                 Token::E => {
@@ -124,7 +127,7 @@ where
                             symmetric.mix_key(re);
                         }
                     } else {
-                        let e = D::pubkey(e.as_ref().unwrap());
+                        let e = &e.as_ref().unwrap().public;
                         symmetric.mix_hash(e.as_slice());
                         if pattern_has_psk {
                             symmetric.mix_key(e.as_slice());
@@ -142,6 +145,7 @@ where
             rs,
             re,
             is_initiator,
+            is_elligator_encoded,
             pattern,
             message_index: 0,
             pattern_has_psk,
@@ -230,9 +234,9 @@ where
             match *t {
                 Token::E => {
                     if self.e.is_none() {
-                        self.e = Some(D::genkey());
+                        self.e = Some(D::genkey(self.is_elligator_encoded));
                     }
-                    let e_pk = D::pubkey(self.e.as_ref().unwrap());
+                    let e_pk = &self.e.as_ref().unwrap().public;
                     self.symmetric.mix_hash(e_pk.as_slice());
                     if self.pattern_has_psk {
                         self.symmetric.mix_key(e_pk.as_slice());
@@ -249,7 +253,7 @@ where
 
                     let encrypted_s_out = &mut out[cur..cur + len];
                     self.symmetric.encrypt_and_hash(
-                        D::pubkey(self.s.as_ref().unwrap()).as_slice(),
+                        self.s.as_ref().unwrap().public.as_slice(),
                         encrypted_s_out,
                     );
                     cur += len;
@@ -439,25 +443,25 @@ where
     }
 
     fn perform_dh(&self, t: Token) -> Result<D::Output, ()> {
-        let dh = |a: Option<&D::Key>, b: Option<&D::Pubkey>| D::dh(a.unwrap(), b.unwrap());
+        let dh = |a: Option<&DhKeyPair<D::Key, D::Pubkey>>, b: Option<&D::Pubkey>, e: bool| D::dh(&a.unwrap().private, b.unwrap(), e);
 
         match t {
-            Token::EE => dh(self.e.as_ref(), self.re.as_ref()),
+            Token::EE => dh(self.e.as_ref(), self.re.as_ref(), self.is_elligator_encoded),
             Token::ES => {
                 if self.is_initiator {
-                    dh(self.e.as_ref(), self.rs.as_ref())
+                    dh(self.e.as_ref(), self.rs.as_ref(), false)
                 } else {
-                    dh(self.s.as_ref(), self.re.as_ref())
+                    dh(self.s.as_ref(), self.re.as_ref(), self.is_elligator_encoded)
                 }
             }
             Token::SE => {
                 if self.is_initiator {
-                    dh(self.s.as_ref(), self.re.as_ref())
+                    dh(self.s.as_ref(), self.re.as_ref(), self.is_elligator_encoded)
                 } else {
-                    dh(self.e.as_ref(), self.rs.as_ref())
+                    dh(self.e.as_ref(), self.rs.as_ref(), false)
                 }
             }
-            Token::SS => dh(self.s.as_ref(), self.rs.as_ref()),
+            Token::SS => dh(self.s.as_ref(), self.rs.as_ref(), false),
             _ => unreachable!(),
         }
     }
@@ -535,9 +539,10 @@ impl ::std::error::Error for Error {
 pub struct HandshakeStateBuilder<'a, D: DH> {
     pattern: Option<HandshakePattern>,
     is_initiator: Option<bool>,
+    is_elligator_encoded: Option<bool>,
     prologue: Option<&'a [u8]>,
-    s: Option<D::Key>,
-    e: Option<D::Key>,
+    s: Option<DhKeyPair<D::Key, D::Pubkey>>,
+    e: Option<DhKeyPair<D::Key, D::Pubkey>>,
     rs: Option<D::Pubkey>,
     re: Option<D::Pubkey>,
 }
@@ -557,6 +562,7 @@ where
         HandshakeStateBuilder {
             pattern: None,
             is_initiator: None,
+            is_elligator_encoded: None,
             prologue: None,
             s: None,
             e: None,
@@ -577,6 +583,12 @@ where
         self
     }
 
+     /// Set whether the ephemeral keys will be encoded in elligator form.
+     pub fn set_is_elligator_encoded(&mut self, is: bool) -> &mut Self {
+        self.is_elligator_encoded = Some(is);
+        self
+    }
+
     /// Set prologue.
     pub fn set_prologue(&mut self, prologue: &'a [u8]) -> &mut Self {
         self.prologue = Some(prologue);
@@ -587,14 +599,21 @@ where
     ///
     /// This is not encouraged and usually not necessary. Cf.
     /// [`HandshakeState::new()`].
-    pub fn set_e(&mut self, e: D::Key) -> &mut Self {
+    pub fn set_e(&mut self, e: DhKeyPair<D::Key, D::Pubkey>) -> &mut Self {
         self.e = Some(e);
         self
     }
 
     /// Set static key.
-    pub fn set_s(&mut self, s: D::Key) -> &mut Self {
+    pub fn set_s(&mut self, s: DhKeyPair<D::Key, D::Pubkey>) -> &mut Self {
         self.s = Some(s);
+        self
+    }
+
+    /// Set static key.
+    pub fn set_s_private(&mut self, s: D::Key) -> &mut Self {
+        let public = D::pubkey(&s);
+        self.s = Some((s, public).into());
         self
     }
 
@@ -628,6 +647,7 @@ where
         HandshakeState::new(
             self.pattern.unwrap(),
             self.is_initiator.unwrap(),
+            self.is_elligator_encoded.unwrap_or(false),
             self.prologue.unwrap(),
             self.s,
             self.e,
